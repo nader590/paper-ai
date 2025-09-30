@@ -1,33 +1,29 @@
-import uvicorn
-from fastapi import FastAPI, UploadFile, File, Form
+import streamlit as st
 from transformers import MT5ForConditionalGeneration, MT5Tokenizer, pipeline
 import PyPDF2
 
-# ------------------- Model Setup -------------------
+# تحميل الموديل
 MODEL_NAME = "google/mt5-small"
+@st.cache_resource
+def load_model():
+    tokenizer = MT5Tokenizer.from_pretrained(MODEL_NAME)
+    model = MT5ForConditionalGeneration.from_pretrained(MODEL_NAME)
+    generator = pipeline("text2text-generation", model=model, tokenizer=tokenizer)
+    return generator
 
-tokenizer = MT5Tokenizer.from_pretrained(MODEL_NAME)
-model = MT5ForConditionalGeneration.from_pretrained(MODEL_NAME)
-generator = pipeline("text2text-generation", model=model, tokenizer=tokenizer)
+generator = load_model()
 
-app = FastAPI(
-    title="Paper AI Assistant",
-    description="📑 تصنيف وتلخيص الأوراق العلمية + أسئلة وأجوبة"
-)
-
-# ------------------- Utils -------------------
+# دالة لاستخراج النص من PDF
 def extract_text_from_pdf(file) -> str:
-    """Extract text from uploaded PDF file"""
     pdf_reader = PyPDF2.PdfReader(file)
     text = ""
     for page in pdf_reader.pages:
-        page_text = page.extract_text()
-        if page_text:
-            text += page_text + "\n"
+        if page.extract_text():
+            text += page.extract_text() + "\n"
     return text.strip()
 
+# دالة لاستدعاء الموديل
 def ask_model(prompt: str, max_new_tokens=500):
-    """Generate text using mT5 model"""
     outputs = generator(
         prompt,
         max_new_tokens=max_new_tokens,
@@ -36,34 +32,40 @@ def ask_model(prompt: str, max_new_tokens=500):
     )
     return outputs[0]["generated_text"]
 
-# ------------------- Endpoints -------------------
-@app.post("/upload-paper/")
-async def upload_paper(file: UploadFile = File(...)):
-    """Upload PDF, classify & summarize it"""
-    text = extract_text_from_pdf(file.file)
+# واجهة Streamlit
+st.title("📄 Paper AI Assistant (Arabic)")
+st.write("ارفع ورقة علمية PDF واحصل على التصنيف + الملخص + اسأل أسئلة عنها")
 
-    classify_prompt = f"صنّف هذه الورقة العلمية حسب مجالها ونوعها:\n{text[:1500]}"
-    classification = ask_model(classify_prompt, max_new_tokens=200)
+uploaded_file = st.file_uploader("Upload PDF", type=["pdf"])
 
-    summary_prompt = f"لخّص هذه الورقة العلمية بالعربية في نقاط واضحة:\n{text[:4000]}"
-    summary = ask_model(summary_prompt, max_new_tokens=400)
+if uploaded_file is not None:
+    text = extract_text_from_pdf(uploaded_file)
 
-    return {
-        "classification": classification,
-        "summary": summary,
-        "full_text": text[:5000]
-    }
+    with st.spinner("⏳ جاري التصنيف..."):
+        classify_prompt = f"صنّف هذه الورقة العلمية حسب مجالها ونوعها:\n{text[:1500]}"
+        classification = ask_model(classify_prompt, max_new_tokens=200)
 
-@app.post("/ask/")
-async def ask_question(
-    question: str = Form(...),
-    context: str = Form(...)
-):
-    """Ask a question about the paper's context"""
-    qa_prompt = f"النص التالي من ورقة علمية:\n{context}\n\nالسؤال: {question}\nالإجابة:"
-    answer = ask_model(qa_prompt, max_new_tokens=300)
-    return {"answer": answer}
+    with st.spinner("⏳ جاري التلخيص..."):
+        summary_prompt = f"لخّص هذه الورقة العلمية بالعربية في نقاط واضحة:\n{text[:4000]}"
+        summary = ask_model(summary_prompt, max_new_tokens=400)
 
-# ------------------- Run -------------------
-if __name__ == "__main__":
-    uvicorn.run("paper_ai:app", host="0.0.0.0", port=8000, reload=True)
+    st.subheader("📌 التصنيف")
+    st.write(classification)
+
+    st.subheader("📝 الملخص")
+    st.write(summary)
+
+    st.subheader("📖 النص المستخرج (جزء)")
+    st.text(text[:1000])
+
+    # قسم الأسئلة
+    st.subheader("❓ اسأل سؤال عن الورقة")
+    question = st.text_input("اكتب سؤالك هنا")
+    if st.button("إجابة"):
+        if question.strip():
+            with st.spinner("⏳ جاري البحث عن الإجابة..."):
+                qa_prompt = f"النص التالي من ورقة علمية:\n{text[:2000]}\n\nالسؤال: {question}\nالإجابة:"
+                answer = ask_model(qa_prompt, max_new_tokens=300)
+            st.success(answer)
+        else:
+            st.warning("من فضلك اكتب سؤال.")
